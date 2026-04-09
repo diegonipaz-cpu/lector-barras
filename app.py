@@ -1,12 +1,29 @@
 import io
+import re
 import cv2
 import numpy as np
 import zxingcpp
 from flask import Flask, render_template, request, jsonify
 from PIL import Image, ExifTags
 
+try:
+    import easyocr
+    _EASYOCR_DISPONIBLE = True
+except Exception:
+    _EASYOCR_DISPONIBLE = False
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB
+
+# Inicializar OCR una sola vez al arrancar (tarda la primera vez)
+_ocr = None
+def get_ocr():
+    global _ocr
+    if not _EASYOCR_DISPONIBLE:
+        return None
+    if _ocr is None:
+        _ocr = easyocr.Reader(["en"], gpu=False, verbose=False)
+    return _ocr
 
 
 # ── Conversiones ──────────────────────────────────────────────────────────────
@@ -198,14 +215,14 @@ def detectar_regiones_barcode(bgr: np.ndarray, margen: float = 0.15) -> list[np.
 def _variantes(bgr: np.ndarray, prefijo: str = ""):
     p = prefijo
     yield f"{p}orig",       cv_a_rgb(bgr)
+    yield f"{p}gris",       cv_a_rgb(cv2.cvtColor(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR))
     yield f"{p}clahe",      cv_a_rgb(clahe(bgr))
     yield f"{p}clahe+enf",  cv_a_rgb(enfocar(clahe(bgr)))
-    yield f"{p}g0.5",       cv_a_rgb(gamma(bgr, 0.5))
-    yield f"{p}g0.4",       cv_a_rgb(gamma(bgr, 0.4))
+    yield f"{p}g0.5+enf",   cv_a_rgb(enfocar(gamma(bgr, 0.5)))
     yield f"{p}g0.4+enf",   cv_a_rgb(enfocar(gamma(bgr, 0.4)))
     yield f"{p}g0.4+clahe", cv_a_rgb(clahe(gamma(bgr, 0.4)))
-    yield f"{p}b80c1.6",    cv_a_rgb(brillo_contraste(bgr, 80, 1.6))
     yield f"{p}b80+clahe",  cv_a_rgb(clahe(brillo_contraste(bgr, 80, 1.6)))
+    yield f"{p}b80+enf",    cv_a_rgb(enfocar(brillo_contraste(bgr, 80, 1.6)))
     yield f"{p}adapt21",    cv_a_rgb(umbral_adaptativo(bgr, 21))
     yield f"{p}adapt11",    cv_a_rgb(umbral_adaptativo(bgr, 11))
 
@@ -236,38 +253,43 @@ def _acumular(arr_rgb: np.ndarray, nombre: str, votos: dict) -> int:
     return nuevos
 
 
-def _escanear_region_completa(region: np.ndarray, prefijo: str, votos: dict):
+def _escanear_franja(franja: np.ndarray, prefijo: str, votos: dict):
+    f = escalar(franja, 2.0)
+    _acumular(cv_a_rgb(f),                            f"{prefijo}orig",  votos)
+    _acumular(cv_a_rgb(clahe(f)),                     f"{prefijo}clahe", votos)
+    _acumular(cv_a_rgb(enfocar(clahe(f))),             f"{prefijo}c+enf", votos)
+    _acumular(cv_a_rgb(enfocar(gamma(f, 0.4))),       f"{prefijo}g+enf", votos)
+    _acumular(cv_a_rgb(umbral_adaptativo(f, 21)),     f"{prefijo}adp21", votos)
+    _acumular(cv_a_rgb(brillo_contraste(f, 80, 1.6)), f"{prefijo}b80",   votos)
+
+
+def _escanear_region_completa(region: np.ndarray, prefijo: str, votos: dict,
+                               hay_resultados_fn=None):
     """
-    Escanea región completa + franjas horizontales con solapamiento.
-    Cada franja se escala ×2 y se procesa con variantes agresivas.
+    Escanea región completa. Si ya hay resultados tras el escaneo base,
+    no continúa con las franjas.
     """
     h = region.shape[0]
 
-    # Región completa
+    # Primero la región completa con todas las variantes
     for nombre, arr in _variantes(region, prefijo=prefijo):
         _acumular(arr, nombre, votos)
 
-    # 6 franjas horizontales con 33% de solapamiento
-    n_franjas = 6
-    franja_h = h // n_franjas
-    if franja_h < 15:
+    # Si ya encontró algo, no hace falta escanear por franjas
+    if hay_resultados_fn and hay_resultados_fn():
         return
 
-    for fi in range(n_franjas + 2):
-        y1 = max(0, fi * franja_h - franja_h // 3)
-        y2 = min(h, y1 + franja_h + franja_h // 3)
+    # Franjas solo si la región completa no fue suficiente
+    franja_h = h // 3
+    if franja_h < 15:
+        return
+    for fi in range(4):
+        y1 = max(0, fi * franja_h - franja_h // 4)
+        y2 = min(h, y1 + franja_h + franja_h // 4)
         franja = region[y1:y2, :]
         if franja.shape[0] < 15:
             continue
-        # Escalar cada franja para darle más resolución
-        franja_esc = escalar(franja, 3.0)
-        for nombre, arr in _variantes(franja_esc, prefijo=f"{prefijo}f{fi}_"):
-            _acumular(arr, nombre, votos)
-        # Variantes extra agresivas por franja
-        _acumular(cv_a_rgb(clahe(franja_esc, clip=6.0, grid=4)), f"{prefijo}f{fi}_clahe6", votos)
-        _acumular(cv_a_rgb(umbral_adaptativo(franja_esc, 11)),   f"{prefijo}f{fi}_adapt11", votos)
-        _acumular(cv_a_rgb(umbral_adaptativo(franja_esc, 31)),   f"{prefijo}f{fi}_adapt31", votos)
-        _acumular(cv_a_rgb(enfocar(gamma(franja_esc, 0.35), 3.0)), f"{prefijo}f{fi}_g035enf3", votos)
+        _escanear_franja(franja, f"{prefijo}f{fi}_", votos)
 
 
 def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
@@ -279,27 +301,55 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
     def hay_resultados():
         return any(len(v["detecciones"]) >= 2 for v in votos.values())
 
-    # ── Fase 1: perspectiva + regiones — escaneo completo sin corte anticipado
+    # ── Fase 1: imagen completa
+    for nombre, arr in _variantes(bgr):
+        _acumular(arr, nombre, votos)
+
+    # ── Fase 2: regiones detectadas (escanea TODAS para no perder barcodes)
+    regiones = detectar_regiones_barcode(bgr)
+    for i, region in enumerate(regiones):
+        if region.size == 0:
+            continue
+        region_esc = escalar(region, 2.0)
+        # hay_resultados se pasa para saltear franjas dentro de una región
+        # si ya encontró algo, pero NO se hace break — escanea todas las regiones
+        _escanear_region_completa(region_esc, f"reg{i}_", votos, hay_resultados)
+
+    if hay_resultados():
+        return _formatear(votos)
+
+    # ── Fase 3: perspectiva + regiones
     for i, plano in enumerate(corregir_perspectiva(bgr)):
         plano_esc = escalar(plano, 2.0) if min(plano.shape[:2]) < 400 else plano
-        _escanear_region_completa(plano_esc, f"persp{i}_", votos)
+        _escanear_region_completa(plano_esc, f"persp{i}_", votos, hay_resultados)
+        if hay_resultados():
+            break
         for j, reg in enumerate(detectar_regiones_barcode(plano_esc)):
             reg_esc = escalar(reg, 2.0)
-            _escanear_region_completa(reg_esc, f"persp{i}r{j}_", votos)
+            _escanear_region_completa(reg_esc, f"persp{i}r{j}_", votos, hay_resultados)
+            if hay_resultados():
+                break
 
-    # ── Fase 2: rotaciones 90/180/270 + regiones — escaneo completo
+    if hay_resultados():
+        return _formatear(votos)
+
+    # ── Fase 3: rotaciones 90/180/270 + regiones
     for veces in [0, 1, 2, 3]:
         base = rotar_90(bgr, veces) if veces > 0 else bgr
         for i, region in enumerate(detectar_regiones_barcode(base)):
             if region.size == 0:
                 continue
             region_esc = escalar(region, 2.0)
-            _escanear_region_completa(region_esc, f"r90x{veces}r{i}_", votos)
+            _escanear_region_completa(region_esc, f"r90x{veces}r{i}_", votos, hay_resultados)
+            if hay_resultados():
+                break
+        if hay_resultados():
+            break
 
     if hay_resultados():
         return _formatear(votos)
 
-    # ── Fase 3: imagen completa (todas las rotaciones)
+    # ── Fase 4: imagen completa (todas las rotaciones)
     for veces in [0, 1, 2, 3]:
         base = rotar_90(bgr, veces) if veces > 0 else bgr
         for nombre, arr in _variantes(base, prefijo=f"full{veces*90}_"):
@@ -307,7 +357,7 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
         if hay_resultados():
             return _formatear(votos)
 
-    # ── Fase 4: imagen escalada ×2
+    # ── Fase 5: imagen escalada ×2
     esc2 = escalar(bgr, 2.0)
     for nombre, arr in _variantes(esc2, prefijo="x2_"):
         _acumular(arr, nombre, votos)
@@ -315,7 +365,7 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
     if hay_resultados():
         return _formatear(votos)
 
-    # ── Fase 5: rotaciones pequeñas + regiones
+    # ── Fase 6: rotaciones pequeñas + regiones
     for angulo in [-5, 5, -10, 10]:
         rot = rotar(bgr, angulo)
         for i, region in enumerate(detectar_regiones_barcode(rot)):
@@ -325,7 +375,7 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
         if hay_resultados():
             return _formatear(votos)
 
-    # ── Fase 6: tiles manuales 3×3
+    # ── Fase 7: tiles manuales 3×3
     h, w = bgr.shape[:2]
     sh, sw = h // 3, w // 3
     for r in range(3):
@@ -340,6 +390,50 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
         return _formatear(votos)
 
     return _formatear(votos, minimo=1)
+
+
+# ── OCR fallback ──────────────────────────────────────────────────────────────
+
+# Patrones comunes en etiquetas de equipos de red
+_PATRONES_OCR = [
+    re.compile(r'\bSN[:\s]*([A-Z0-9]{8,})\b', re.IGNORECASE),
+    re.compile(r'\bMAC[:\s]*([A-F0-9]{12})\b', re.IGNORECASE),
+    re.compile(r'\bMAC[:\s]*((?:[A-F0-9]{2}[:\-]){5}[A-F0-9]{2})\b', re.IGNORECASE),
+    re.compile(r'\bPROD\s*ID[:\s]*([A-Z0-9]{8,})\b', re.IGNORECASE),
+    re.compile(r'\b([A-Z0-9]{12,})\b'),   # cadena alfanumérica larga (genérico)
+]
+
+def extraer_con_ocr(bgr: np.ndarray) -> list[dict]:
+    """
+    Usa OCR para leer texto de la imagen cuando el barcode no pudo ser leído.
+    Extrae valores que parecen códigos (SN, MAC, PROD ID, etc.)
+    """
+    try:
+        ocr = get_ocr()
+        if ocr is None:
+            return []
+        img_esc = escalar(bgr, 2.0)
+        resultados_ocr = ocr.readtext(img_esc, detail=0, paragraph=False)
+        texto_completo = " ".join(resultados_ocr)
+
+        encontrados = {}
+        for linea in resultados_ocr:
+            linea = linea.strip()
+            for patron in _PATRONES_OCR:
+                for m in patron.finditer(linea):
+                    valor = m.group(1) if m.lastindex else m.group(0)
+                    valor = valor.strip(":- ")
+                    if len(valor) >= 8 and valor not in encontrados:
+                        encontrados[valor] = {
+                            "datos": valor,
+                            "tipo": "OCR",
+                            "detectado_con": "ocr",
+                            "confirmaciones": 1,
+                            "posicion": {"x": 0, "y": 0, "ancho": 0, "alto": 0},
+                        }
+        return list(encontrados.values())
+    except Exception as e:
+        return []
 
 
 def _formatear(votos: dict, minimo: int = 2) -> list[dict]:
@@ -382,6 +476,11 @@ def escanear():
 
     resultados = leer_codigos_barras(imagen)
 
+    # OCR solo si no se encontró ningún código de barras
+    if not resultados:
+        bgr = pil_a_cv(imagen)
+        resultados = extraer_con_ocr(bgr)
+
     return jsonify({
         "total": len(resultados),
         "nombre": archivo.filename,
@@ -390,4 +489,6 @@ def escanear():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=False, host="0.0.0.0", port=port)

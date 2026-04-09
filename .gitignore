@@ -9,3 +9,6 @@ __pycache__/
 *.bmp
 *.webp
 reporte.html
+venv311/
+venv/
+.venv/

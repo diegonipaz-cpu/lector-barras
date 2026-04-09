@@ -4,3 +4,4 @@ numpy
 Flask
 opencv-python
 gunicorn
+easyocr
