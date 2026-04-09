@@ -1,4 +1,3 @@
-import base64
 import io
 import cv2
 import numpy as np
@@ -275,16 +274,9 @@ def escanear():
 
     resultados = leer_codigos_barras(imagen)
 
-    buffer = io.BytesIO()
-    fmt = imagen.format or "PNG"
-    imagen.save(buffer, format=fmt)
-    img_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    mime = f"image/{fmt.lower()}"
-
     return jsonify({
         "total": len(resultados),
         "nombre": archivo.filename,
-        "imagen_b64": f"data:{mime};base64,{img_b64}",
         "codigos": resultados,
     })
 

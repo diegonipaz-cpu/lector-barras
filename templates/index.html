@@ -431,14 +431,6 @@
         </div>
       </div>
 
-      <div class="img-result-card">
-        <div class="section-title">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-          Imagen analizada
-        </div>
-        <img id="img-resultado" alt="Imagen analizada"/>
-      </div>
-
       <div class="table-card">
         <div class="table-header">
           <div class="section-title" style="margin:0">
@@ -540,7 +532,6 @@
   function mostrarResultados(data) {
     document.getElementById("stat-total").textContent = data.total;
     document.getElementById("stat-nombre").textContent = data.nombre;
-    document.getElementById("img-resultado").src = data.imagen_b64;
 
     const wrapper = document.getElementById("tabla-wrapper");
 
