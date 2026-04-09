@@ -236,49 +236,62 @@ def _acumular(arr_rgb: np.ndarray, nombre: str, votos: dict) -> int:
     return nuevos
 
 
+def _escanear_region_completa(region: np.ndarray, prefijo: str, votos: dict):
+    """
+    Escanea una región completa + franjas horizontales para no perder
+    códigos que estén en distintas filas de la misma etiqueta.
+    """
+    h = region.shape[0]
+    # Región completa
+    for nombre, arr in _variantes(region, prefijo=prefijo):
+        _acumular(arr, nombre, votos)
+    # Franjas horizontales con solapamiento 25%
+    franja_h = h // 3
+    for fi in range(4):
+        y1 = max(0, fi * franja_h - franja_h // 4)
+        y2 = min(h, y1 + franja_h + franja_h // 4)
+        franja = region[y1:y2, :]
+        if franja.shape[0] < 20:
+            continue
+        for nombre, arr in _variantes(franja, prefijo=f"{prefijo}f{fi}_"):
+            _acumular(arr, nombre, votos)
+
+
 def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
-    # Corregir orientación EXIF antes de todo (fotos de celular rotadas)
     imagen = corregir_exif(imagen)
     bgr_orig = pil_a_cv(imagen)
     bgr = escalar_max(bgr_orig, max_lado=2000)
     votos: dict[str, dict] = {}
 
-    def encontrados():
-        return [v for v in votos.values() if len(v["detecciones"]) >= 2]
+    def hay_resultados():
+        return any(len(v["detecciones"]) >= 2 for v in votos.values())
 
-    # ── Fase 1: corrección de perspectiva (etiquetas tomadas de costado)
+    # ── Fase 1: perspectiva + regiones — escaneo completo sin corte anticipado
     for i, plano in enumerate(corregir_perspectiva(bgr)):
         plano_esc = escalar(plano, 2.0) if min(plano.shape[:2]) < 400 else plano
-        for nombre, arr in _variantes(plano_esc, prefijo=f"persp{i}_"):
-            _acumular(arr, nombre, votos)
-        # También buscar regiones dentro del plano corregido
-        for j, region in enumerate(detectar_regiones_barcode(plano_esc)):
-            region_esc = escalar(region, 2.0)
-            for nombre, arr in _variantes(region_esc, prefijo=f"persp{i}reg{j}_"):
-                _acumular(arr, nombre, votos)
-    if encontrados():
-        return _formatear(votos)
+        _escanear_region_completa(plano_esc, f"persp{i}_", votos)
+        for j, reg in enumerate(detectar_regiones_barcode(plano_esc)):
+            reg_esc = escalar(reg, 2.0)
+            _escanear_region_completa(reg_esc, f"persp{i}r{j}_", votos)
 
-    # ── Fase 2: rotaciones 90/180/270 + regiones (cubre fotos dadas vuelta)
+    # ── Fase 2: rotaciones 90/180/270 + regiones — escaneo completo
     for veces in [0, 1, 2, 3]:
         base = rotar_90(bgr, veces) if veces > 0 else bgr
-        regiones = detectar_regiones_barcode(base)
-        for i, region in enumerate(regiones):
+        for i, region in enumerate(detectar_regiones_barcode(base)):
             if region.size == 0:
                 continue
             region_esc = escalar(region, 2.0)
-            prefijo = f"r90x{veces}_reg{i}_"
-            for nombre, arr in _variantes(region_esc, prefijo=prefijo):
-                _acumular(arr, nombre, votos)
-        if encontrados():
-            return _formatear(votos)
+            _escanear_region_completa(region_esc, f"r90x{veces}r{i}_", votos)
+
+    if hay_resultados():
+        return _formatear(votos)
 
     # ── Fase 3: imagen completa (todas las rotaciones)
     for veces in [0, 1, 2, 3]:
         base = rotar_90(bgr, veces) if veces > 0 else bgr
         for nombre, arr in _variantes(base, prefijo=f"full{veces*90}_"):
             _acumular(arr, nombre, votos)
-        if encontrados():
+        if hay_resultados():
             return _formatear(votos)
 
     # ── Fase 4: imagen escalada ×2
@@ -286,19 +299,17 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
     for nombre, arr in _variantes(esc2, prefijo="x2_"):
         _acumular(arr, nombre, votos)
 
-    if encontrados():
+    if hay_resultados():
         return _formatear(votos)
 
-    # ── Fase 5: rotaciones pequeñas (foto levemente inclinada)
+    # ── Fase 5: rotaciones pequeñas + regiones
     for angulo in [-5, 5, -10, 10]:
         rot = rotar(bgr, angulo)
         for i, region in enumerate(detectar_regiones_barcode(rot)):
             if region.size == 0:
                 continue
-            region_esc = escalar(region, 2.0)
-            for nombre, arr in _variantes(region_esc, prefijo=f"rot{angulo}r{i}_"):
-                _acumular(arr, nombre, votos)
-        if encontrados():
+            _escanear_region_completa(escalar(region, 2.0), f"rot{angulo}r{i}_", votos)
+        if hay_resultados():
             return _formatear(votos)
 
     # ── Fase 6: tiles manuales 3×3
@@ -312,10 +323,9 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
             _acumular(cv_a_rgb(clahe(esc)),      f"t{r}{c}_clahe", votos)
             _acumular(cv_a_rgb(gamma(esc, 0.4)), f"t{r}{c}_g0.4",  votos)
 
-    if encontrados():
+    if hay_resultados():
         return _formatear(votos)
 
-    # ── Fase 6: último recurso — aceptar detecciones únicas
     return _formatear(votos, minimo=1)
 
 
