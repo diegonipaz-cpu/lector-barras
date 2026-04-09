@@ -89,6 +89,63 @@ def corregir_exif(imagen: Image.Image) -> Image.Image:
     return imagen
 
 
+# ── Corrección de perspectiva ─────────────────────────────────────────────────
+
+def corregir_perspectiva(bgr: np.ndarray) -> list[np.ndarray]:
+    """
+    Detecta rectángulos (etiquetas) en la imagen y aplica transformación
+    de perspectiva para aplanarlos. Muy útil para fotos tomadas de costado.
+    """
+    resultados = []
+    gris = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gris, (5, 5), 0)
+    edges = cv2.Canny(blur, 50, 150)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    edges = cv2.dilate(edges, kernel, iterations=2)
+
+    contornos, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    h, w = bgr.shape[:2]
+    area_img = h * w
+
+    for cnt in sorted(contornos, key=cv2.contourArea, reverse=True)[:5]:
+        area = cv2.contourArea(cnt)
+        # Solo rectángulos que ocupen entre 5% y 80% de la imagen
+        if area < area_img * 0.05 or area > area_img * 0.80:
+            continue
+
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+
+        if len(approx) == 4:
+            pts = approx.reshape(4, 2).astype(np.float32)
+            # Ordenar: top-left, top-right, bottom-right, bottom-left
+            s = pts.sum(axis=1)
+            d = np.diff(pts, axis=1)
+            ordered = np.array([
+                pts[np.argmin(s)],
+                pts[np.argmin(d)],
+                pts[np.argmax(s)],
+                pts[np.argmax(d)],
+            ], dtype=np.float32)
+
+            wa = np.linalg.norm(ordered[1] - ordered[0])
+            wb = np.linalg.norm(ordered[2] - ordered[3])
+            ha = np.linalg.norm(ordered[3] - ordered[0])
+            hb = np.linalg.norm(ordered[2] - ordered[1])
+            nw, nh = int(max(wa, wb)), int(max(ha, hb))
+
+            if nw < 50 or nh < 50:
+                continue
+
+            dst = np.array([[0,0],[nw,0],[nw,nh],[0,nh]], dtype=np.float32)
+            M = cv2.getPerspectiveTransform(ordered, dst)
+            warped = cv2.warpPerspective(bgr, M, (nw, nh))
+            resultados.append(warped)
+
+    return resultados
+
+
 # ── Detección de regiones con códigos de barras ───────────────────────────────
 
 def detectar_regiones_barcode(bgr: np.ndarray, margen: float = 0.15) -> list[np.ndarray]:
@@ -189,7 +246,20 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
     def encontrados():
         return [v for v in votos.values() if len(v["detecciones"]) >= 2]
 
-    # ── Fase 1: rotaciones 90/180/270 + regiones (cubre fotos dadas vuelta)
+    # ── Fase 1: corrección de perspectiva (etiquetas tomadas de costado)
+    for i, plano in enumerate(corregir_perspectiva(bgr)):
+        plano_esc = escalar(plano, 2.0) if min(plano.shape[:2]) < 400 else plano
+        for nombre, arr in _variantes(plano_esc, prefijo=f"persp{i}_"):
+            _acumular(arr, nombre, votos)
+        # También buscar regiones dentro del plano corregido
+        for j, region in enumerate(detectar_regiones_barcode(plano_esc)):
+            region_esc = escalar(region, 2.0)
+            for nombre, arr in _variantes(region_esc, prefijo=f"persp{i}reg{j}_"):
+                _acumular(arr, nombre, votos)
+    if encontrados():
+        return _formatear(votos)
+
+    # ── Fase 2: rotaciones 90/180/270 + regiones (cubre fotos dadas vuelta)
     for veces in [0, 1, 2, 3]:
         base = rotar_90(bgr, veces) if veces > 0 else bgr
         regiones = detectar_regiones_barcode(base)
@@ -203,7 +273,7 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
         if encontrados():
             return _formatear(votos)
 
-    # ── Fase 2: imagen completa (todas las rotaciones)
+    # ── Fase 3: imagen completa (todas las rotaciones)
     for veces in [0, 1, 2, 3]:
         base = rotar_90(bgr, veces) if veces > 0 else bgr
         for nombre, arr in _variantes(base, prefijo=f"full{veces*90}_"):
@@ -211,7 +281,7 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
         if encontrados():
             return _formatear(votos)
 
-    # ── Fase 3: imagen escalada ×2
+    # ── Fase 4: imagen escalada ×2
     esc2 = escalar(bgr, 2.0)
     for nombre, arr in _variantes(esc2, prefijo="x2_"):
         _acumular(arr, nombre, votos)
@@ -219,7 +289,7 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
     if encontrados():
         return _formatear(votos)
 
-    # ── Fase 4: rotaciones pequeñas (foto levemente inclinada)
+    # ── Fase 5: rotaciones pequeñas (foto levemente inclinada)
     for angulo in [-5, 5, -10, 10]:
         rot = rotar(bgr, angulo)
         for i, region in enumerate(detectar_regiones_barcode(rot)):
@@ -231,7 +301,7 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
         if encontrados():
             return _formatear(votos)
 
-    # ── Fase 5: tiles manuales 3×3
+    # ── Fase 6: tiles manuales 3×3
     h, w = bgr.shape[:2]
     sh, sw = h // 3, w // 3
     for r in range(3):
