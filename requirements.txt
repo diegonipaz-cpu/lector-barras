@@ -1,0 +1,6 @@
+Pillow
+zxing-cpp
+numpy
+Flask
+opencv-python
+gunicorn

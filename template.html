@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Reporte - Lector de Códigos de Barras</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      color: #1a1a2e;
+      min-height: 100vh;
+    }
+
+    header {
+      background: linear-gradient(135deg, #1a1a2e, #16213e);
+      color: white;
+      padding: 24px 40px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+
+    header svg { flex-shrink: 0; }
+
+    header h1 { font-size: 1.5rem; font-weight: 600; }
+    header p  { font-size: 0.85rem; opacity: 0.6; margin-top: 2px; }
+
+    .container { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+
+    /* Stats */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    .stat-card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      border-left: 4px solid #4f46e5;
+    }
+
+    .stat-card.verde  { border-color: #10b981; }
+    .stat-card.naranja{ border-color: #f59e0b; }
+
+    .stat-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: .05em; color: #6b7280; }
+    .stat-value { font-size: 2rem; font-weight: 700; margin-top: 4px; color: #1a1a2e; }
+
+    /* Imagen previa */
+    .preview-section {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      margin-bottom: 28px;
+    }
+
+    .section-title {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #374151;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .preview-section img {
+      max-width: 100%;
+      max-height: 320px;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+      display: block;
+    }
+
+    /* Tabla */
+    .table-section {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      overflow: hidden;
+    }
+
+    .table-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid #f3f4f6;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+
+    thead th {
+      background: #f9fafb;
+      padding: 12px 20px;
+      text-align: left;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: #6b7280;
+      border-bottom: 1px solid #e5e7eb;
+    }
+
+    tbody tr { transition: background .15s; }
+    tbody tr:hover { background: #f9fafb; }
+
+    tbody td {
+      padding: 14px 20px;
+      border-bottom: 1px solid #f3f4f6;
+      vertical-align: middle;
+    }
+
+    tbody tr:last-child td { border-bottom: none; }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: #ede9fe;
+      color: #6d28d9;
+    }
+
+    .badge.qr     { background: #d1fae5; color: #065f46; }
+    .badge.ean    { background: #dbeafe; color: #1e40af; }
+    .badge.upc    { background: #fef3c7; color: #92400e; }
+    .badge.code128{ background: #fee2e2; color: #991b1b; }
+
+    .datos-cell {
+      font-family: monospace;
+      font-size: 0.95rem;
+      word-break: break-all;
+      max-width: 380px;
+    }
+
+    .pos-cell { color: #6b7280; font-size: 0.82rem; }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #9ca3af;
+    }
+
+    .empty-state svg { margin-bottom: 12px; opacity: .4; }
+    .empty-state p { font-size: 1rem; }
+
+    /* Botón copiar */
+    .btn-copy {
+      background: none;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      color: #6b7280;
+      transition: all .15s;
+    }
+    .btn-copy:hover { background: #f3f4f6; color: #374151; }
+    .btn-copy.copiado { color: #10b981; border-color: #10b981; }
+
+    footer {
+      text-align: center;
+      padding: 24px;
+      color: #9ca3af;
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="7" y1="7" x2="7" y2="17"/><line x1="10" y1="7" x2="10" y2="17"/>
+    <line x1="13" y1="7" x2="13" y2="12"/><line x1="16" y1="7" x2="16" y2="17"/><line x1="13" y1="15" x2="13" y2="17"/>
+  </svg>
+  <div>
+    <h1>Lector de Códigos de Barras</h1>
+    <p>Generado el {{FECHA}}</p>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card verde">
+      <div class="stat-label">Códigos encontrados</div>
+      <div class="stat-value" id="total">{{TOTAL}}</div>
+    </div>
+    <div class="stat-card naranja">
+      <div class="stat-label">Imagen analizada</div>
+      <div class="stat-value" style="font-size:0.95rem; padding-top:8px; word-break:break-all;" id="nombre-imagen">—</div>
+    </div>
+  </div>
+
+  <!-- Preview -->
+  <div class="preview-section">
+    <div class="section-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+      Imagen analizada
+    </div>
+    <img id="img-preview" src="{{IMAGEN}}" alt="Imagen analizada" />
+  </div>
+
+  <!-- Tabla -->
+  <div class="table-section">
+    <div class="table-header">
+      <div class="section-title" style="margin:0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg>
+        Resultados
+      </div>
+    </div>
+
+    <div id="tabla-wrapper"></div>
+  </div>
+
+</div>
+
+<footer>Lector de Códigos de Barras &mdash; {{FECHA}}</footer>
+
+<script>
+  const datos = {{DATOS_JSON}};
+  const imagen = "{{IMAGEN}}";
+
+  // Nombre de archivo
+  document.getElementById("nombre-imagen").textContent = imagen.split(/[\\/]/).pop();
+
+  function badgeClass(tipo) {
+    if (tipo.includes("QR"))      return "qr";
+    if (tipo.includes("EAN"))     return "ean";
+    if (tipo.includes("UPC"))     return "upc";
+    if (tipo.includes("128"))     return "code128";
+    return "";
+  }
+
+  function copiar(texto, btn) {
+    navigator.clipboard.writeText(texto).then(() => {
+      btn.textContent = "✓ Copiado";
+      btn.classList.add("copiado");
+      setTimeout(() => { btn.textContent = "Copiar"; btn.classList.remove("copiado"); }, 1500);
+    });
+  }
+
+  const wrapper = document.getElementById("tabla-wrapper");
+
+  if (datos.length === 0) {
+    wrapper.innerHTML = `
+      <div class="empty-state">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <p>No se encontraron códigos de barras en la imagen.</p>
+      </div>`;
+  } else {
+    const filas = datos.map((c, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td><span class="badge ${badgeClass(c.tipo)}">${c.tipo}</span></td>
+        <td class="datos-cell">${c.datos}</td>
+        <td class="pos-cell">x:${c.posicion.x} y:${c.posicion.y}<br>${c.posicion.ancho}×${c.posicion.alto} px</td>
+        <td><button class="btn-copy" onclick="copiar('${c.datos.replace(/'/g,"\\'")}', this)">Copiar</button></td>
+      </tr>`).join("");
+
+    wrapper.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Tipo</th>
+            <th>Datos</th>
+            <th>Posición</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>`;
+  }
+</script>
+
+</body>
+</html>

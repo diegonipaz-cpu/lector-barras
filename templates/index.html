@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Lector de Códigos de Barras</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      color: #1a1a2e;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      background: linear-gradient(135deg, #1a1a2e, #16213e);
+      color: white;
+      padding: 18px 40px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    header h1 { font-size: 1.3rem; font-weight: 600; }
+    header p  { font-size: 0.78rem; opacity: 0.55; margin-top: 2px; }
+
+    /* ── Layout dos columnas ── */
+    main {
+      flex: 1;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 28px 24px;
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+
+    /* ── Panel izquierdo ── */
+    .panel-izq {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      position: sticky;
+      top: 24px;
+    }
+
+    .upload-card {
+      background: white;
+      border-radius: 16px;
+      padding: 28px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .card-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #374151;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .drop-zone {
+      width: 100%;
+      border: 2px dashed #c4b5fd;
+      border-radius: 12px;
+      padding: 0;
+      text-align: center;
+      cursor: pointer;
+      transition: background .2s, border-color .2s;
+      position: relative;
+      overflow: hidden;
+      min-height: 200px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      background: #f5f3ff;
+      border-color: #7c3aed;
+    }
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+
+    #placeholder { padding: 32px 16px; }
+    .drop-icon { margin-bottom: 10px; color: #7c3aed; }
+    #placeholder h2 { font-size: 0.95rem; color: #374151; margin-bottom: 5px; }
+    #placeholder p  { font-size: 0.78rem; color: #9ca3af; }
+
+    #preview-container {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+    }
+    #preview-img {
+      width: 100%;
+      max-height: 280px;
+      object-fit: contain;
+      border-radius: 10px;
+      display: block;
+    }
+    #preview-name {
+      font-size: 0.75rem;
+      color: #6b7280;
+      padding: 8px;
+      text-align: center;
+      word-break: break-all;
+    }
+
+    .btn-row { display: flex; gap: 10px; align-items: center; }
+
+    .btn-primary {
+      flex: 1;
+      background: linear-gradient(135deg, #7c3aed, #4f46e5);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 12px 20px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .2s, transform .1s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary:not(:disabled):hover { opacity: .88; }
+    .btn-primary:not(:disabled):active { transform: scale(.98); }
+
+    .btn-reset {
+      background: none;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      color: #6b7280;
+      transition: background .15s;
+      white-space: nowrap;
+    }
+    .btn-reset:hover { background: #f3f4f6; }
+
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2.5px solid rgba(255,255,255,.4);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      display: none;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Panel derecho ── */
+    .panel-der {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      min-height: 400px;
+    }
+
+    /* Estado vacío del panel derecho */
+    .panel-der-vacio {
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 400px;
+      color: #d1d5db;
+      gap: 14px;
+      padding: 40px;
+    }
+    .panel-der-vacio p { font-size: 0.95rem; color: #9ca3af; }
+
+    /* Stats */
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .stat-card {
+      background: white;
+      border-radius: 12px;
+      padding: 16px 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      border-left: 4px solid #4f46e5;
+    }
+    .stat-card.verde   { border-color: #10b981; }
+    .stat-card.naranja { border-color: #f59e0b; }
+    .stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: .05em; color: #6b7280; }
+    .stat-value { font-size: 1.8rem; font-weight: 700; margin-top: 2px; }
+
+    /* Imagen resultado */
+    .img-result-card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    }
+    .section-title {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 12px;
+    }
+    #img-resultado {
+      max-width: 100%;
+      max-height: 260px;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+      display: block;
+    }
+
+    /* Tabla */
+    .table-card {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      overflow: hidden;
+    }
+    .table-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    thead th {
+      background: #f9fafb;
+      padding: 10px 16px;
+      text-align: left;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: #6b7280;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    tbody tr { transition: background .12s; }
+    tbody tr:hover { background: #f9fafb; }
+    tbody td {
+      padding: 12px 16px;
+      border-bottom: 1px solid #f3f4f6;
+      vertical-align: middle;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      background: #ede9fe;
+      color: #6d28d9;
+      white-space: nowrap;
+    }
+    .badge.qr      { background: #d1fae5; color: #065f46; }
+    .badge.ean     { background: #dbeafe; color: #1e40af; }
+    .badge.upc     { background: #fef3c7; color: #92400e; }
+    .badge.code128 { background: #fee2e2; color: #991b1b; }
+
+    .datos-cell    { font-family: monospace; font-size: 0.9rem; word-break: break-all; }
+    .pos-cell      { color: #6b7280; font-size: 0.75rem; white-space: nowrap; }
+    .pipeline-cell { color: #9ca3af; font-size: 0.7rem; font-style: italic; }
+
+    .btn-copy {
+      background: none;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 0.7rem;
+      cursor: pointer;
+      color: #6b7280;
+      transition: all .15s;
+      white-space: nowrap;
+    }
+    .btn-copy:hover { background: #f3f4f6; color: #374151; }
+    .btn-copy.copiado { color: #10b981; border-color: #10b981; }
+
+    .empty-state {
+      text-align: center;
+      padding: 48px 20px;
+      color: #9ca3af;
+    }
+    .empty-state p { margin-top: 10px; font-size: 0.9rem; }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: #ef4444;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 10px;
+      font-size: 0.88rem;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+      transition: transform .3s ease;
+      z-index: 999;
+    }
+    #toast.show { transform: translateX(-50%) translateY(0); }
+
+    footer {
+      text-align: center;
+      padding: 18px;
+      color: #9ca3af;
+      font-size: 0.75rem;
+      grid-column: 1 / -1;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 860px) {
+      main { grid-template-columns: 1fr; }
+      .panel-izq { position: static; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2"/>
+    <line x1="7" y1="7" x2="7" y2="17"/><line x1="10" y1="7" x2="10" y2="17"/>
+    <line x1="13" y1="7" x2="13" y2="12"/><line x1="16" y1="7" x2="16" y2="17"/>
+    <line x1="13" y1="15" x2="13" y2="17"/>
+  </svg>
+  <div>
+    <h1>Lector de Códigos de Barras</h1>
+    <p>Subí una imagen y detectamos los códigos automáticamente</p>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── COLUMNA IZQUIERDA ── -->
+  <div class="panel-izq">
+    <div class="upload-card">
+
+      <div class="card-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Subir imagen
+      </div>
+
+      <div class="drop-zone" id="drop-zone">
+        <input type="file" id="file-input" accept="image/*"/>
+
+        <div id="placeholder">
+          <div class="drop-icon">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </div>
+          <h2>Arrastrá o hacé clic</h2>
+          <p>PNG, JPG, WEBP, BMP — máx. 32 MB</p>
+        </div>
+
+        <div id="preview-container">
+          <img id="preview-img" alt="Vista previa"/>
+          <span id="preview-name"></span>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="btn-escanear" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          <span id="btn-texto">Escanear</span>
+          <div class="spinner" id="spinner"></div>
+        </button>
+        <button class="btn-reset" id="btn-reset" style="display:none">Limpiar</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── COLUMNA DERECHA ── -->
+  <div class="panel-der" id="panel-der">
+
+    <!-- Estado vacío inicial -->
+    <div class="panel-der-vacio" id="estado-vacio">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2"/>
+        <line x1="7" y1="7" x2="7" y2="17"/><line x1="10" y1="7" x2="10" y2="17"/>
+        <line x1="13" y1="7" x2="13" y2="12"/><line x1="16" y1="7" x2="16" y2="17"/>
+        <line x1="13" y1="15" x2="13" y2="17"/>
+      </svg>
+      <p>Los resultados aparecerán acá</p>
+    </div>
+
+    <!-- Resultados (ocultos hasta escanear) -->
+    <div id="resultados" style="display:none; flex-direction:column; gap:20px;">
+
+      <div class="stats">
+        <div class="stat-card verde">
+          <div class="stat-label">Códigos encontrados</div>
+          <div class="stat-value" id="stat-total">0</div>
+        </div>
+        <div class="stat-card naranja">
+          <div class="stat-label">Archivo</div>
+          <div class="stat-value" id="stat-nombre" style="font-size:.82rem; padding-top:6px; word-break:break-all; font-weight:500;">—</div>
+        </div>
+      </div>
+
+      <div class="img-result-card">
+        <div class="section-title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          Imagen analizada
+        </div>
+        <img id="img-resultado" alt="Imagen analizada"/>
+      </div>
+
+      <div class="table-card">
+        <div class="table-header">
+          <div class="section-title" style="margin:0">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg>
+            Detalle de códigos
+          </div>
+        </div>
+        <div id="tabla-wrapper"></div>
+      </div>
+
+    </div>
+  </div>
+
+</main>
+
+<footer>Lector de Códigos de Barras</footer>
+<div id="toast"></div>
+
+<script>
+  const dropZone    = document.getElementById("drop-zone");
+  const fileInput   = document.getElementById("file-input");
+  const placeholder = document.getElementById("placeholder");
+  const previewCont = document.getElementById("preview-container");
+  const previewImg  = document.getElementById("preview-img");
+  const previewName = document.getElementById("preview-name");
+  const btnEscanear = document.getElementById("btn-escanear");
+  const btnReset    = document.getElementById("btn-reset");
+  const btnTexto    = document.getElementById("btn-texto");
+  const spinner     = document.getElementById("spinner");
+  const estadoVacio = document.getElementById("estado-vacio");
+  const resultados  = document.getElementById("resultados");
+  const toast       = document.getElementById("toast");
+
+  let archivoSeleccionado = null;
+
+  // Drag & drop
+  dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+  dropZone.addEventListener("drop", e => {
+    e.preventDefault();
+    dropZone.classList.remove("drag-over");
+    const file = e.dataTransfer.files[0];
+    if (file) cargarArchivo(file);
+  });
+
+  fileInput.addEventListener("change", () => {
+    if (fileInput.files[0]) cargarArchivo(fileInput.files[0]);
+  });
+
+  function cargarArchivo(file) {
+    archivoSeleccionado = file;
+    previewImg.src = URL.createObjectURL(file);
+    previewName.textContent = file.name;
+    placeholder.style.display = "none";
+    previewCont.style.display = "flex";
+    btnEscanear.disabled = false;
+    btnReset.style.display = "inline-block";
+    // Volver al estado vacío al cambiar imagen
+    estadoVacio.style.display = "flex";
+    resultados.style.display = "none";
+  }
+
+  btnReset.addEventListener("click", () => {
+    archivoSeleccionado = null;
+    fileInput.value = "";
+    previewImg.src = "";
+    placeholder.style.display = "block";
+    previewCont.style.display = "none";
+    btnEscanear.disabled = true;
+    btnReset.style.display = "none";
+    estadoVacio.style.display = "flex";
+    resultados.style.display = "none";
+  });
+
+  btnEscanear.addEventListener("click", async () => {
+    if (!archivoSeleccionado) return;
+
+    btnTexto.textContent = "Escaneando...";
+    spinner.style.display = "block";
+    btnEscanear.disabled = true;
+
+    const formData = new FormData();
+    formData.append("imagen", archivoSeleccionado);
+
+    try {
+      const res  = await fetch("/escanear", { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) { mostrarToast(data.error || "Error al escanear."); return; }
+      mostrarResultados(data);
+    } catch {
+      mostrarToast("No se pudo conectar con el servidor.");
+    } finally {
+      btnTexto.textContent = "Escanear";
+      spinner.style.display = "none";
+      btnEscanear.disabled = false;
+    }
+  });
+
+  function mostrarResultados(data) {
+    document.getElementById("stat-total").textContent = data.total;
+    document.getElementById("stat-nombre").textContent = data.nombre;
+    document.getElementById("img-resultado").src = data.imagen_b64;
+
+    const wrapper = document.getElementById("tabla-wrapper");
+
+    if (data.codigos.length === 0) {
+      wrapper.innerHTML = `
+        <div class="empty-state">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <p>No se encontraron códigos de barras en la imagen.</p>
+        </div>`;
+    } else {
+      const filas = data.codigos.map((c, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td><span class="badge ${badgeClass(c.tipo)}">${c.tipo}</span></td>
+          <td class="datos-cell">${escapeHtml(c.datos)}</td>
+          <td class="pos-cell">x:${c.posicion.x} y:${c.posicion.y}<br>${c.posicion.ancho}×${c.posicion.alto}px</td>
+          <td class="pipeline-cell" title="Confirmado por ${c.confirmaciones} pipelines">✓ ×${c.confirmaciones}</td>
+          <td><button class="btn-copy" data-valor="${escapeAttr(c.datos)}">Copiar</button></td>
+        </tr>`).join("");
+
+      wrapper.innerHTML = `
+        <table>
+          <thead><tr><th>#</th><th>Tipo</th><th>Datos</th><th>Posición</th><th>Confianza</th><th></th></tr></thead>
+          <tbody>${filas}</tbody>
+        </table>`;
+
+      wrapper.querySelectorAll(".btn-copy").forEach(btn => {
+        btn.addEventListener("click", () => {
+          navigator.clipboard.writeText(btn.dataset.valor).then(() => {
+            btn.textContent = "✓ Copiado";
+            btn.classList.add("copiado");
+            setTimeout(() => { btn.textContent = "Copiar"; btn.classList.remove("copiado"); }, 1500);
+          });
+        });
+      });
+    }
+
+    estadoVacio.style.display = "none";
+    resultados.style.display = "flex";
+  }
+
+  function badgeClass(tipo) {
+    if (tipo.includes("QR"))  return "qr";
+    if (tipo.includes("EAN")) return "ean";
+    if (tipo.includes("UPC")) return "upc";
+    if (tipo.includes("128")) return "code128";
+    return "";
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+  function escapeAttr(str) {
+    return str.replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  }
+
+  function mostrarToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add("show");
+    setTimeout(() => toast.classList.remove("show"), 3500);
+  }
+</script>
+
+</body>
+</html>
