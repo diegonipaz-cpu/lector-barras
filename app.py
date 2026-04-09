@@ -238,23 +238,36 @@ def _acumular(arr_rgb: np.ndarray, nombre: str, votos: dict) -> int:
 
 def _escanear_region_completa(region: np.ndarray, prefijo: str, votos: dict):
     """
-    Escanea una región completa + franjas horizontales para no perder
-    códigos que estén en distintas filas de la misma etiqueta.
+    Escanea región completa + franjas horizontales con solapamiento.
+    Cada franja se escala ×2 y se procesa con variantes agresivas.
     """
     h = region.shape[0]
+
     # Región completa
     for nombre, arr in _variantes(region, prefijo=prefijo):
         _acumular(arr, nombre, votos)
-    # Franjas horizontales con solapamiento 25%
-    franja_h = h // 3
-    for fi in range(4):
-        y1 = max(0, fi * franja_h - franja_h // 4)
-        y2 = min(h, y1 + franja_h + franja_h // 4)
+
+    # 6 franjas horizontales con 33% de solapamiento
+    n_franjas = 6
+    franja_h = h // n_franjas
+    if franja_h < 15:
+        return
+
+    for fi in range(n_franjas + 2):
+        y1 = max(0, fi * franja_h - franja_h // 3)
+        y2 = min(h, y1 + franja_h + franja_h // 3)
         franja = region[y1:y2, :]
-        if franja.shape[0] < 20:
+        if franja.shape[0] < 15:
             continue
-        for nombre, arr in _variantes(franja, prefijo=f"{prefijo}f{fi}_"):
+        # Escalar cada franja para darle más resolución
+        franja_esc = escalar(franja, 3.0)
+        for nombre, arr in _variantes(franja_esc, prefijo=f"{prefijo}f{fi}_"):
             _acumular(arr, nombre, votos)
+        # Variantes extra agresivas por franja
+        _acumular(cv_a_rgb(clahe(franja_esc, clip=6.0, grid=4)), f"{prefijo}f{fi}_clahe6", votos)
+        _acumular(cv_a_rgb(umbral_adaptativo(franja_esc, 11)),   f"{prefijo}f{fi}_adapt11", votos)
+        _acumular(cv_a_rgb(umbral_adaptativo(franja_esc, 31)),   f"{prefijo}f{fi}_adapt31", votos)
+        _acumular(cv_a_rgb(enfocar(gamma(franja_esc, 0.35), 3.0)), f"{prefijo}f{fi}_g035enf3", votos)
 
 
 def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
