@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import zxingcpp
 from flask import Flask, render_template, request, jsonify
-from PIL import Image
+from PIL import Image, ExifTags
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB
@@ -66,6 +66,27 @@ def rotar(bgr: np.ndarray, angulo: float) -> np.ndarray:
     M[1, 2] += (nh / 2) - cy
     return cv2.warpAffine(bgr, M, (nw, nh), flags=cv2.INTER_LANCZOS4,
                           borderMode=cv2.BORDER_REPLICATE)
+
+def rotar_90(bgr: np.ndarray, veces: int) -> np.ndarray:
+    """Rota 90° * veces en sentido antihorario (1=90, 2=180, 3=270)."""
+    return np.rot90(bgr, k=veces)
+
+def corregir_exif(imagen: Image.Image) -> Image.Image:
+    """Corrige la orientación usando los metadatos EXIF del celular."""
+    try:
+        exif = imagen._getexif()
+        if exif is None:
+            return imagen
+        orientacion_tag = next(
+            k for k, v in ExifTags.TAGS.items() if v == "Orientation"
+        )
+        orientacion = exif.get(orientacion_tag)
+        rotaciones = {3: 180, 6: 270, 8: 90}
+        if orientacion in rotaciones:
+            return imagen.rotate(rotaciones[orientacion], expand=True)
+    except Exception:
+        pass
+    return imagen
 
 
 # ── Detección de regiones con códigos de barras ───────────────────────────────
@@ -159,6 +180,8 @@ def _acumular(arr_rgb: np.ndarray, nombre: str, votos: dict) -> int:
 
 
 def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
+    # Corregir orientación EXIF antes de todo (fotos de celular rotadas)
+    imagen = corregir_exif(imagen)
     bgr_orig = pil_a_cv(imagen)
     bgr = escalar_max(bgr_orig, max_lado=2000)
     votos: dict[str, dict] = {}
@@ -166,26 +189,29 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
     def encontrados():
         return [v for v in votos.values() if len(v["detecciones"]) >= 2]
 
-    # ── Fase 1: regiones detectadas automáticamente (rápido y efectivo)
-    regiones = detectar_regiones_barcode(bgr)
-    for i, region in enumerate(regiones):
-        if region.size == 0:
-            continue
-        region_esc = escalar(region, 2.0)
-        for nombre, arr in _variantes(region_esc, prefijo=f"reg{i}_"):
+    # ── Fase 1: rotaciones 90/180/270 + regiones (cubre fotos dadas vuelta)
+    for veces in [0, 1, 2, 3]:
+        base = rotar_90(bgr, veces) if veces > 0 else bgr
+        regiones = detectar_regiones_barcode(base)
+        for i, region in enumerate(regiones):
+            if region.size == 0:
+                continue
+            region_esc = escalar(region, 2.0)
+            prefijo = f"r90x{veces}_reg{i}_"
+            for nombre, arr in _variantes(region_esc, prefijo=prefijo):
+                _acumular(arr, nombre, votos)
+        if encontrados():
+            return _formatear(votos)
+
+    # ── Fase 2: imagen completa (todas las rotaciones)
+    for veces in [0, 1, 2, 3]:
+        base = rotar_90(bgr, veces) if veces > 0 else bgr
+        for nombre, arr in _variantes(base, prefijo=f"full{veces*90}_"):
             _acumular(arr, nombre, votos)
+        if encontrados():
+            return _formatear(votos)
 
-    if encontrados():
-        return _formatear(votos)
-
-    # ── Fase 2: imagen completa con preprocesados base
-    for nombre, arr in _variantes(bgr):
-        _acumular(arr, nombre, votos)
-
-    if encontrados():
-        return _formatear(votos)
-
-    # ── Fase 3: imagen escalada ×2 (para códigos pequeños)
+    # ── Fase 3: imagen escalada ×2
     esc2 = escalar(bgr, 2.0)
     for nombre, arr in _variantes(esc2, prefijo="x2_"):
         _acumular(arr, nombre, votos)
@@ -193,7 +219,7 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
     if encontrados():
         return _formatear(votos)
 
-    # ── Fase 4: regiones con rotaciones (foto inclinada)
+    # ── Fase 4: rotaciones pequeñas (foto levemente inclinada)
     for angulo in [-5, 5, -10, 10]:
         rot = rotar(bgr, angulo)
         for i, region in enumerate(detectar_regiones_barcode(rot)):
@@ -212,9 +238,9 @@ def leer_codigos_barras(imagen: Image.Image) -> list[dict]:
         for c in range(3):
             tile = bgr[r*sh:(r+1)*sh, c*sw:(c+1)*sw]
             esc  = escalar(tile, 2.0)
-            _acumular(cv_a_rgb(esc),              f"t{r}{c}_orig",  votos)
-            _acumular(cv_a_rgb(clahe(esc)),        f"t{r}{c}_clahe", votos)
-            _acumular(cv_a_rgb(gamma(esc, 0.4)),   f"t{r}{c}_g0.4",  votos)
+            _acumular(cv_a_rgb(esc),            f"t{r}{c}_orig",  votos)
+            _acumular(cv_a_rgb(clahe(esc)),      f"t{r}{c}_clahe", votos)
+            _acumular(cv_a_rgb(gamma(esc, 0.4)), f"t{r}{c}_g0.4",  votos)
 
     if encontrados():
         return _formatear(votos)
@@ -227,17 +253,6 @@ def _formatear(votos: dict, minimo: int = 2) -> list[dict]:
     confirmados = [v for v in votos.values() if len(v["detecciones"]) >= minimo]
     if not confirmados and minimo > 1:
         confirmados = list(votos.values())
-    return [
-        {
-            "datos":          v["datos"],
-            "tipo":           v["tipo"],
-            "detectado_con":  v["detecciones"][0],
-            "confirmaciones": len(v["detecciones"]),
-            "posicion":       v["posicion"],
-        }
-        for v in confirmados
-    ]
-
     return [
         {
             "datos":          v["datos"],
