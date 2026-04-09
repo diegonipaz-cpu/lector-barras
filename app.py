@@ -476,10 +476,18 @@ def escanear():
 
     resultados = leer_codigos_barras(imagen)
 
-    # OCR solo si no se encontró ningún código de barras
-    if not resultados:
+    # OCR si no encontró ningún barcode, o si encontró pero ninguno es el código objetivo
+    def es_objetivo(datos: str) -> bool:
+        d = datos.upper()
+        return d.startswith("ZTE") or d.startswith("4857544")
+
+    if not resultados or not any(es_objetivo(r["datos"]) for r in resultados):
         bgr = pil_a_cv(imagen)
-        resultados = extraer_con_ocr(bgr)
+        ocr_resultados = extraer_con_ocr(bgr)
+        datos_existentes = {r["datos"] for r in resultados}
+        for r in ocr_resultados:
+            if r["datos"] not in datos_existentes:
+                resultados.append(r)
 
     return jsonify({
         "total": len(resultados),
